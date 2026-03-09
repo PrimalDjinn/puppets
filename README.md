@@ -1,44 +1,101 @@
-# tor_sellenium
+# tor_selenium
 
-This is a simple working python program that changes your IP address each time you connect
+Automate Chrome through the Tor network with Python.  
+Each run gives you a different exit IP, and you can rotate identities on the fly with a single function call.
 
-## Getting started
+## What it does
 
-* open powershell/terminal as administrator(this will help us deal with some issues that may arise)
-* change directory to your preferred directory (unnecessary, just note the current directory so that you don't lose your files) Use  ```cd``` to change directory eg ```cd desktop``` will change the working directory to the desktop which I can recommend as it is easy to find the files later.
-* type ```mkdir tor_tests``` We are making a directory named 'Project', but you can call it whatever you want.
-* then cd into it using the command ```tor_tests``` (this makes it the current working directory)
-* create a virtual environment ```python -m venv myvenv```(this creates a virtual environment for python)
-* activate the environment using ```myvenv/Scripts/activate``` (Note the S is capital). You may receive an error because running scripts is disabled. At this point restart powershell this time as administrator and type in this command 'set-executionpolicy remotesigned'. It will allow local scripts to run.
+1. Launches a **private Tor process** on random free ports (no conflict with a system Tor).
+2. Opens an **undetected Chrome** browser routed through that Tor SOCKS proxy.
+3. Lets you **rotate your IP** (`NEWNYM`) and verifies the new circuit is ready before continuing.
 
-Now we laugh HAHAHA
-### More requirements
-You need Tor
-Download it from [here](https://www.torproject.org/download/)
+## Prerequisites
 
-Install the requirements for the file to run as specified in [requirements.exe](https://github.com/kgarchie/tor_selenium/blob/master/requirements.txt)
+| Dependency | Install |
+|---|---|
+| **Tor** | `sudo apt install tor` (Debian/Ubuntu) · `brew install tor` (macOS) · or grab the [Tor Expert Bundle](https://www.torproject.org/download/tor/) on Windows |
+| **Google Chrome** | [https://www.google.com/chrome/](https://www.google.com/chrome/) |
+| **Python ≥ 3.10** | [https://www.python.org/downloads/](https://www.python.org/downloads/) |
 
-After Stem is installed we need to fix a bug
-  - go to (*the relative path is*)`myvenv/Lib/site-packages/stem` and edit the stem file called process.py on line 204
-  it reads by default
-  ```python
-  def launch_tor_with_config(config, tor_cmd = 'tor', completion_percent = 100, init_msg_handler = None, timeout = DEFAULT_INIT_TIMEOUT, take_ownership = False, close_output = True):
-  # the rest of the code
-    pass
-  ```
-  - change it to
-   ```python
-   def launch_tor_with_config(config, tor_cmd = 'where_you_installed_your_tor_browser\\Tor Browser\\Browser\\TorBrowser\\Tor\\tor.exe', completion_percent = 100, init_msg_handler = None, timeout = DEFAULT_INIT_TIMEOUT, take_ownership = False, close_output = True):
-   # PS make sure it directs to tor.exe wherever the hell it is in your system
-    pass
-   ```
+> **Note:** You no longer need to download ChromeDriver manually — `undetected-chromedriver` handles that automatically and matches it to your installed Chrome version.
 
-You need ChromeWebdriver from [here](https://chromedriver.chromium.org/downloads) *i used chrome i'm either too lazy to dig around other browsers or inept*
+## Quick start
 
-You need to know what you are doing
+```bash
+# clone the repo
+git clone https://github.com/PrimalDjinn/tor_selenium.git
+cd tor_selenium
 
-run the file using `python tor_tests.py`
+# create & activate a virtual environment
+python3 -m venv venv
+source venv/bin/activate        # Linux / macOS
+# venv\Scripts\activate         # Windows
 
-i've just given you power beyond your imagination **With great power comes great responsibility** seriously tho use it wisely, I won't be responsible if you end up in prison
+# install dependencies
+pip install -r requirements.txt
 
-for errors i'll be happy to help just raise an issue or pull request
+# run
+python tor_test.py
+```
+
+You should see output like:
+
+```
+INFO:root:starting tor  socks_port=51099  control_port=32889  binary=/usr/sbin/tor
+INFO:root:first request done
+INFO:root:new identity requested
+INFO:root:tor ready after NEWNYM – new ip 109.70.100.2
+INFO:root:second request done
+```
+
+## Usage in your own code
+
+```python
+from tor_test import launch_tor, browse_through_tor, new_identity, wait_for_tor
+
+# start tor
+tor_proc, socks_port, control_port = launch_tor()
+
+# open a browser through tor
+driver = browse_through_tor(socks_port)
+driver.get("https://your-app.example.com")
+driver.quit()
+
+# rotate IP
+new_identity(control_port)
+ip = wait_for_tor(socks_port)
+print(f"New exit IP: {ip}")
+
+# open another browser with the new IP
+driver = browse_through_tor(socks_port)
+driver.get("https://your-app.example.com")
+driver.quit()
+
+# clean up
+tor_proc.terminate()
+```
+
+## API reference
+
+| Function | Description |
+|---|---|
+| `launch_tor(timeout=120)` | Start a Tor process on free ports. Returns `(process, socks_port, control_port)`. |
+| `new_identity(control_port)` | Signal `NEWNYM` to get a fresh circuit / exit IP. |
+| `check_tor_proxy(socks_port)` | Single HTTP probe through the proxy — returns the exit IP. |
+| `wait_for_tor(socks_port, timeout=60)` | Poll until Tor has a working circuit, then return the IP. |
+| `browse_through_tor(socks_port)` | Launch an undetected Chrome instance routed through Tor. Retries up to 3 times. |
+
+## Troubleshooting
+
+- **`OSError: could not start tor`** — make sure the `tor` binary is on your `PATH` (`which tor`).
+- **Chrome version mismatch** — update Chrome or run `pip install -U undetected-chromedriver`.
+- **Timeout waiting for circuit** — increase the `timeout` argument; slow networks may need 120 s+.
+- **`SocketClosed` log messages from stem** — these are harmless; they appear when the controller connection is closed.
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+> *With great power comes great responsibility.* Use this tool ethically and legally.
