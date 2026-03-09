@@ -172,7 +172,7 @@ class Session:
         Args:
             url: URL to navigate to after browser starts.
             action_callback: Optional callback function that receives the WebDriver
-                           instance for custom actions like clicking buttons.
+                           instance for custom browser actions.
             
         Returns:
             Dictionary with session results:

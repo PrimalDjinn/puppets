@@ -111,12 +111,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.remote.webdriver import WebDriver
 
-# Basic usage - get IP and navigate
+# Single session - get IP and navigate
 with Session() as session:
     result = session.run("https://example.com")
     print(f"IP: {result['ip']}")
 
-# Advanced usage - control the browser directly
+# Full control - driver access
 # This gives you full access to the Selenium WebDriver
 with Session() as session:
     session.start()  # Start Tor and browser
@@ -127,13 +127,13 @@ with Session() as session:
     # Navigate to any URL
     driver.get("https://example.com")
     
-    # Wait for and click buttons
+    # Wait for and interact with elements
     button = WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.ID, "my-button"))
     )
     button.click()
     
-    # Fill forms, scrape data, etc.
+    # Fill forms, scrape data, execute JavaScript, take screenshots, etc.
     print(f"Page title: {driver.title}")
     
     # The session will automatically clean up when exiting the context
@@ -228,12 +228,12 @@ manager.cleanup_all()
 
 ## Examples
 
-### Basic Usage
+### Single Session
 
 ```python
 from tor_selenium import Session
 
-# Simple single session
+# Single session with full browser control
 with Session() as session:
     result = session.run("https://httpbin.org/ip")
     print(f"My IP through Tor: {result['ip']}")
@@ -256,7 +256,7 @@ ips = [r['ip'] for r in results if r['success']]
 print(f"Unique IPs: {len(set(ips))}")
 ```
 
-### Custom Actions (Clicking Buttons)
+### Custom Actions (Full Browser Control)
 
 ```python
 from tor_selenium import SessionManager, Session

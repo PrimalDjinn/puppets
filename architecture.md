@@ -169,13 +169,13 @@ Manages the Chrome/Chromium browser with Tor proxy.
 
 ### 1. Session gives you the driver
 
-The `Session` class should give you direct access to the Selenium WebDriver. This allows you to:
+The `Session` class gives you direct access to the Selenium WebDriver. This enables:
 - Navigate to URLs
-- Find elements
-- Click buttons
-- Fill forms
+- Find and interact with elements
+- Fill forms, click, scroll, drag
 - Execute JavaScript
 - Take screenshots
+- DOM manipulation
 - Any other Selenium operation
 
 ### 2. SessionManager manages Sessions
@@ -199,7 +199,7 @@ Users should have control over when sessions start and stop:
 - **SessionManager**: Multiple sessions + parallel execution
 - **User code**: DOM manipulation via driver
 
-## Example: 5 browsers clicking a button
+## Example: Parallel Browser Automation
 
 ```python
 from puppets import SessionManager
