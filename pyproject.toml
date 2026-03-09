@@ -7,9 +7,8 @@ name = "puppets"
 dynamic = ["version"]
 description = "Parallel Tor browser automation with Python"
 readme = "README.md"
-authors = [
-    {name = "Puppets Contributors"}
-]
+authors = [{ name = "Allan Bosire (PrimalDjinn)" }]
+license = { file = "./LICENSE"}
 requires-python = ">=3.8"
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -50,7 +49,7 @@ Repository = "https://github.com/PrimalDjinn/puppets.git"
 Issues = "https://github.com/PrimalDjinn/puppets/issues"
 
 [tool.setuptools.dynamic]
-version = {attr = "puppets.__version__"}
+version = { attr = "puppets.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["."]

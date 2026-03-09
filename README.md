@@ -30,6 +30,29 @@ Automate Chrome through the Tor network with Python. Each run gives you a differ
 3. Each session gets a **unique IP address** from the Tor network
 4. Supports **parallel execution** for running hundreds of sessions simultaneously
 
+## Key Features
+
+### 🔐 Tor Integration
+- **Isolated Tor Instances** - Each browser session runs through its own dedicated Tor process
+- **No System Tor Conflict** - Uses random free ports, so it won't interfere with any existing Tor installation
+- **Identity Rotation** - Request a new Tor identity anytime to get a fresh IP address
+- **Full Tor Control** - Access Tor's control port for advanced configuration
+
+### 🎭 Undetected Chrome
+- **Bypass Detection** - Uses `undetected-chromedriver` to avoid bot detection
+- **Automatic ChromeDriver** - No need to manually manage ChromeDriver versions
+- **Stealth Mode** - Automatically patches Chrome to appear as a regular browser
+- **Works with Chrome & Chromium** - Automatically detects your installed browser
+
+## Use Cases
+
+- **Web Scraping** - Extract data from websites without getting blocked or rate-limited
+- **Privacy Testing** - Test your applications from different IP addresses and locations
+- **Automation** - Automate browser tasks while maintaining anonymity
+- **Security Research** - Conduct security assessments from different exit nodes
+- **Price Monitoring** - Track prices across different regions anonymously
+- **Account Management** - Manage multiple accounts with different IP addresses
+
 ## Installation
 
 ### From GitHub Packages
