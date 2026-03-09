@@ -81,7 +81,7 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
           gh release create "$TAG" dist/* \
             --repo "${{ github.repository }}" \
-            --title "Puppets $TAG" \
+            --title "$TAG" \
             --generate-notes
 
       - name: Upload assets to existing release
