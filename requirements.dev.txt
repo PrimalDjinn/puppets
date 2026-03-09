@@ -29,7 +29,7 @@ packaging==26.0
 pathspec==1.0.4
 platformdirs==4.9.4
 pluggy==1.6.0
--e git+https://github.com/PrimalDjinn/tor_selenium.git@981b20682093710aa970170696271f0edfeaec80#egg=puppets
+-e git+https://github.com/PrimalDjinn/tor_selenium.git@c2fc2383d864f22e924db94ca5c99d3f23f7e092#egg=puppets
 pycparser==3.0
 Pygments==2.19.2
 pyproject_hooks==1.2.0
