@@ -44,9 +44,7 @@ def check_tor_proxy(socks_port: int, url: str = IP_CHECK_URL) -> str:
             f"Cannot connect to Tor SOCKS proxy at localhost:{socks_port}"
         ) from exc
     except requests.exceptions.Timeout as exc:
-        raise TorConnectionError(
-            f"Request timed out through Tor proxy"
-        ) from exc
+        raise TorConnectionError(f"Request timed out through Tor proxy") from exc
     except requests.exceptions.RequestException as exc:
         raise TorConnectionError(
             f"HTTP request failed through Tor proxy: {exc}"
@@ -57,7 +55,7 @@ def wait_for_tor(socks_port: int, timeout: int = 60) -> str:
     """Wait for Tor proxy to be ready."""
     start = time.time()
     last_error = None
-    
+
     while True:
         try:
             return check_tor_proxy(socks_port)
@@ -72,17 +70,17 @@ def wait_for_tor(socks_port: int, timeout: int = 60) -> str:
 
 class Session:
     """A single browser session with its own Tor instance.
-    
+
     This is the main class for running a single session. Each session
     gets its own fresh Tor instance, ensuring a unique IP address.
-    
+
     Attributes:
         session_id: Unique identifier for this session.
         tor_instance: The Tor instance for this session.
         browser: The browser instance.
         ip: The current IP address (after Tor connection).
     """
-    
+
     def __init__(
         self,
         session_id: Optional[str] = None,
@@ -90,33 +88,34 @@ class Session:
         tor_timeout: int = 120,
     ):
         """Initialize a new session.
-        
+
         Args:
             session_id: Optional custom session ID. Auto-generated if not provided.
             headless: Whether to run browser in headless mode.
             tor_timeout: Seconds to wait for Tor to start.
         """
         import uuid
+
         self.session_id = session_id or str(uuid.uuid4())[:8]
         self.headless = headless
         self.tor_timeout = tor_timeout
-        
+
         self.tor_instance: Optional[TorInstance] = None
         self.browser: Optional[Browser] = None
         self.ip: Optional[str] = None
         self._driver = None
-    
+
     @property
     def driver(self):
         """Get the Selenium WebDriver instance."""
         return self._driver
-    
+
     def start(self) -> None:
         """Start the session (Tor + browser).
-        
+
         This starts Tor and the browser but does NOT navigate to any URL.
         Use this when you want full control over the driver for DOM manipulation.
-        
+
         After calling start(), you can use self.driver to:
         - Navigate to URLs
         - Find and click elements
@@ -124,7 +123,7 @@ class Session:
         - Execute JavaScript
         - Take screenshots
         - Any other Selenium operations
-        
+
         Raises:
             TorConnectionError: If Tor fails to start or connect.
             BrowserError: If browser fails to start.
@@ -133,24 +132,23 @@ class Session:
         logger.info(f"[{self.session_id}] Starting Tor instance...")
         self.tor_instance = TorInstance(timeout=self.tor_timeout)
         self.tor_instance.start()
-        
+
         # Verify Tor is working
         logger.info(f"[{self.session_id}] Verifying Tor connection...")
         self.ip = wait_for_tor(self.tor_instance.socks_port)
         logger.info(f"[{self.session_id}] Tor ready with IP: {self.ip}")
-        
+
         # Start browser
         logger.info(f"[{self.session_id}] Starting browser...")
         self.browser = Browser(
-            socks_port=self.tor_instance.socks_port,
-            headless=self.headless
+            socks_port=self.tor_instance.socks_port, headless=self.headless
         )
         self._driver = self.browser.start()
         logger.info(f"[{self.session_id}] Browser ready")
-    
+
     def navigate(self, url: str) -> None:
         """Navigate to a URL.
-        
+
         Args:
             url: The URL to navigate to.
         """
@@ -158,22 +156,26 @@ class Session:
             raise RuntimeError("Session not started. Call start() first.")
         self._driver.get(url)
         time.sleep(2)  # Wait for page to load
-    
-    def run(self, url: str = IP_CHECK_URL, action_callback: Optional[Callable[[Any], None]] = None) -> Dict[str, Any]:
+
+    def run(
+        self,
+        url: str = IP_CHECK_URL,
+        action_callback: Optional[Callable[[Any], None]] = None,
+    ) -> Dict[str, Any]:
         """Run a complete session.
-        
+
         This will:
         1. Start a fresh Tor instance
         2. Verify Tor is working
         3. Start the browser
         4. Navigate to the URL
         5. Optionally execute custom actions via callback
-        
+
         Args:
             url: URL to navigate to after browser starts.
             action_callback: Optional callback function that receives the WebDriver
                            instance for custom browser actions.
-            
+
         Returns:
             Dictionary with session results:
                 - session_id: The session ID
@@ -188,33 +190,32 @@ class Session:
             "success": False,
             "error": None,
         }
-        
+
         try:
             # Start Tor
             logger.info(f"[{self.session_id}] Starting Tor instance...")
             self.tor_instance = TorInstance(timeout=self.tor_timeout)
             self.tor_instance.start()
             result["socks_port"] = self.tor_instance.socks_port
-            
+
             # Verify Tor is working
             logger.info(f"[{self.session_id}] Verifying Tor connection...")
             self.ip = wait_for_tor(self.tor_instance.socks_port)
             result["ip"] = self.ip
             logger.info(f"[{self.session_id}] Tor ready with IP: {self.ip}")
-            
+
             # Start browser
             logger.info(f"[{self.session_id}] Starting browser...")
             self.browser = Browser(
-                socks_port=self.tor_instance.socks_port,
-                headless=self.headless
+                socks_port=self.tor_instance.socks_port, headless=self.headless
             )
             self._driver = self.browser.start()
-            
+
             # Navigate to URL
             logger.info(f"[{self.session_id}] Navigating to {url}...")
             self._driver.get(url)
             time.sleep(5)  # Wait for page to load
-            
+
             # Execute custom actions if provided
             if action_callback:
                 logger.info(f"[{self.session_id}] Executing custom actions...")
@@ -223,20 +224,20 @@ class Session:
                 except Exception as exc:
                     logger.error(f"[{self.session_id}] Custom action failed: {exc}")
                     raise
-            
+
             result["success"] = True
             logger.info(f"[{self.session_id}] Session completed successfully")
-            
+
             return result
-            
+
         except Exception as exc:
             result["error"] = str(exc)
             logger.error(f"[{self.session_id}] Session failed: {exc}")
             raise
-            
+
         finally:
             self.cleanup()
-    
+
     def cleanup(self) -> None:
         """Clean up all resources."""
         if self.browser:
@@ -245,18 +246,18 @@ class Session:
             except Exception:
                 pass
             self.browser = None
-        
+
         if self.tor_instance:
             try:
                 self.tor_instance.stop()
             except Exception:
                 pass
             self.tor_instance = None
-    
+
     def __enter__(self):
         """Context manager entry."""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.cleanup()

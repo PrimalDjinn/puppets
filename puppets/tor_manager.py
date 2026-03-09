@@ -24,15 +24,15 @@ def get_free_port() -> int:
 
 def find_tor_executable() -> str:
     """Find the Tor executable on the system.
-    
+
     Returns:
         Path to the Tor executable.
-        
+
     Raises:
         TorLaunchError: If Tor is not found.
     """
     tor_cmd = shutil.which("tor")
-    
+
     if tor_cmd is None:
         # Try common installation paths
         common_tor_paths = [
@@ -46,7 +46,7 @@ def find_tor_executable() -> str:
             if os.path.isfile(path) and os.access(path, os.X_OK):
                 tor_cmd = path
                 break
-    
+
     if tor_cmd is None:
         raise TorLaunchError(
             "Tor executable not found. Please install Tor:\n"
@@ -54,23 +54,23 @@ def find_tor_executable() -> str:
             "  - macOS: brew install tor\n"
             "  - Or verify Tor is in your PATH with: which tor"
         )
-    
+
     logger.debug("using tor executable: %s", tor_cmd)
     return tor_cmd
 
 
 class TorInstance:
     """Manages a single Tor instance.
-    
+
     Attributes:
         process: The Tor subprocess.
         socks_port: The SOCKS port number.
         control_port: The control port number.
     """
-    
+
     def __init__(self, timeout: int = 120):
         """Initialize a new Tor instance.
-        
+
         Args:
             timeout: Seconds to wait for Tor to start.
         """
@@ -79,29 +79,30 @@ class TorInstance:
         self.control_port: int = 0
         self._timeout = timeout
         self._controller: Optional[Controller] = None
-    
+
     def start(self) -> Tuple[Any, int, int]:
         """Start a new Tor instance.
-        
+
         Returns:
             Tuple of (process, socks_port, control_port).
-            
+
         Raises:
             TorLaunchError: If Tor fails to start.
         """
         self.socks_port = get_free_port()
         self.control_port = get_free_port()
-        
+
         logger.info(
             "starting tor attached to socks port %s control port %s",
-            self.socks_port, self.control_port
+            self.socks_port,
+            self.control_port,
         )
-        
+
         tor_cmd = find_tor_executable()
-        
+
         def _init_msg(msg: str) -> None:
             logger.debug("tor: %s", msg)
-        
+
         try:
             self.process = process.launch_tor_with_config(
                 tor_cmd=tor_cmd,
@@ -129,19 +130,19 @@ class TorInstance:
                 f"Unexpected error starting Tor: {exc}\n"
                 "Please check that Tor is properly installed and configured."
             ) from exc
-        
+
         return self.process, self.socks_port, self.control_port
-    
+
     def new_identity(self) -> None:
         """Request a new Tor identity (new IP).
-        
+
         Raises:
             TorConnectionError: If authentication or signal fails.
         """
         try:
             self._controller = Controller.from_port(port=str(self.control_port))
             self._controller.authenticate()
-            self._controller.signal(Signal.NEWNYM) # type: ignore
+            self._controller.signal(Signal.NEWNYM)  # type: ignore
         except Exception as exc:
             raise TorConnectionError(
                 f"Failed to request new Tor identity: {exc}"
@@ -150,25 +151,25 @@ class TorInstance:
             if self._controller:
                 self._controller.close()
                 self._controller = None
-    
+
     def stop(self) -> None:
         """Stop the Tor instance."""
         if self.process:
             self.process.terminate()
             self.process = None
-        
+
         if self._controller:
             try:
                 self._controller.close()
             except Exception:
                 pass
             self._controller = None
-    
+
     def __enter__(self):
         """Context manager entry."""
         self.start()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.stop()

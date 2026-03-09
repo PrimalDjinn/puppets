@@ -29,34 +29,34 @@ class TestGetFreePort:
 class TestFindTorExecutable:
     """Test find_tor_executable function."""
 
-    @patch('puppets.tor_manager.shutil.which')
+    @patch("puppets.tor_manager.shutil.which")
     def test_finds_tor_in_path(self, mock_which):
         """Test that tor is found in PATH."""
         mock_which.return_value = "/usr/bin/tor"
         result = find_tor_executable()
         assert result == "/usr/bin/tor"
 
-    @patch('puppets.tor_manager.shutil.which')
-    @patch('puppets.tor_manager.os.path.isfile')
-    @patch('puppets.tor_manager.os.access')
+    @patch("puppets.tor_manager.shutil.which")
+    @patch("puppets.tor_manager.os.path.isfile")
+    @patch("puppets.tor_manager.os.access")
     def test_finds_tor_in_common_paths(self, mock_access, mock_isfile, mock_which):
         """Test that tor is found in common paths when not in PATH."""
         mock_which.return_value = None
         mock_isfile.return_value = True
         mock_access.return_value = True
-        
+
         result = find_tor_executable()
         assert result in ["/usr/sbin/tor", "/usr/bin/tor", "/usr/local/bin/tor"]
 
-    @patch('puppets.tor_manager.shutil.which')
-    @patch('puppets.tor_manager.os.path.isfile', return_value=False)
+    @patch("puppets.tor_manager.shutil.which")
+    @patch("puppets.tor_manager.os.path.isfile", return_value=False)
     def test_raises_error_when_tor_not_found(self, mock_isfile, mock_which):
         """Test that error is raised when tor is not found."""
         mock_which.return_value = None
-        
+
         with pytest.raises(TorLaunchError) as exc_info:
             find_tor_executable()
-        
+
         assert "Tor executable not found" in str(exc_info.value)
 
 
@@ -75,17 +75,17 @@ class TestTorInstance:
         instance = TorInstance(timeout=60)
         assert instance._timeout == 60
 
-    @patch('puppets.tor_manager.process.launch_tor_with_config')
-    @patch('puppets.tor_manager.find_tor_executable')
+    @patch("puppets.tor_manager.process.launch_tor_with_config")
+    @patch("puppets.tor_manager.find_tor_executable")
     def test_tor_instance_start(self, mock_find_tor, mock_launch):
         """Test TorInstance.start() launches Tor."""
         mock_find_tor.return_value = "/usr/bin/tor"
         mock_process = Mock()
         mock_launch.return_value = mock_process
-        
+
         instance = TorInstance()
         process, socks_port, control_port = instance.start()
-        
+
         assert process is mock_process
         assert socks_port > 0
         assert control_port > 0
@@ -96,21 +96,21 @@ class TestTorInstance:
         instance = TorInstance()
         mock_process = Mock()
         instance.process = mock_process
-        
+
         instance.stop()
-        
+
         mock_process.terminate.assert_called_once()
         assert instance.process is None
 
     def test_tor_instance_context_manager(self):
         """Test TorInstance as context manager."""
-        with patch('puppets.tor_manager.process.launch_tor_with_config') as mock_launch:
-            with patch('puppets.tor_manager.find_tor_executable') as mock_find:
+        with patch("puppets.tor_manager.process.launch_tor_with_config") as mock_launch:
+            with patch("puppets.tor_manager.find_tor_executable") as mock_find:
                 mock_find.return_value = "/usr/bin/tor"
                 mock_process = Mock()
                 mock_launch.return_value = mock_process
-                
+
                 with TorInstance() as instance:
                     assert instance.process is not None
-                
+
                 mock_process.terminate.assert_called_once()

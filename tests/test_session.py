@@ -23,33 +23,35 @@ class TestIsPortOpen:
 class TestCheckTorProxy:
     """Test check_tor_proxy function."""
 
-    @patch('puppets.session.requests.get')
+    @patch("puppets.session.requests.get")
     def test_check_tor_proxy_success(self, mock_get):
         """Test successful proxy check."""
         mock_response = Mock()
         mock_response.text.strip.return_value = "1.2.3.4"
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-        
+
         result = check_tor_proxy(9050)
-        
+
         assert result == "1.2.3.4"
 
-    @patch('puppets.session.requests.get')
+    @patch("puppets.session.requests.get")
     def test_check_tor_proxy_connection_error(self, mock_get):
         """Test connection error handling."""
         import requests
+
         mock_get.side_effect = requests.exceptions.ConnectionError()
-        
+
         with pytest.raises(TorConnectionError):
             check_tor_proxy(9050)
 
-    @patch('puppets.session.requests.get')
+    @patch("puppets.session.requests.get")
     def test_check_tor_proxy_timeout(self, mock_get):
         """Test timeout error handling."""
         import requests
+
         mock_get.side_effect = requests.exceptions.Timeout()
-        
+
         with pytest.raises(TorConnectionError):
             check_tor_proxy(9050)
 
@@ -57,23 +59,23 @@ class TestCheckTorProxy:
 class TestWaitForTor:
     """Test wait_for_tor function."""
 
-    @patch('puppets.session.check_tor_proxy')
+    @patch("puppets.session.check_tor_proxy")
     def test_wait_for_tor_success(self, mock_check):
         """Test successful wait."""
         mock_check.return_value = "1.2.3.4"
-        
+
         result = wait_for_tor(9050, timeout=5)
-        
+
         assert result == "1.2.3.4"
 
-    @patch('puppets.session.check_tor_proxy')
+    @patch("puppets.session.check_tor_proxy")
     def test_wait_for_tor_timeout(self, mock_check):
         """Test timeout handling."""
         mock_check.side_effect = Exception("Connection refused")
-        
+
         with pytest.raises(TorConnectionError) as exc_info:
             wait_for_tor(9050, timeout=1)
-        
+
         assert "timed out" in str(exc_info.value).lower()
 
 
@@ -98,8 +100,8 @@ class TestSession:
         session = Session(headless=True)
         assert session.headless is True
 
-    @patch('puppets.session.TorInstance')
-    @patch('puppets.session.Browser')
+    @patch("puppets.session.TorInstance")
+    @patch("puppets.session.Browser")
     def test_session_run(self, mock_browser_class, mock_tor_class):
         """Test Session.run() executes successfully."""
         # Mock Tor
@@ -114,32 +116,32 @@ class TestSession:
         mock_browser_class.return_value = mock_browser
 
         # Mock wait_for_tor
-        with patch('puppets.session.wait_for_tor', return_value="1.2.3.4"):
+        with patch("puppets.session.wait_for_tor", return_value="1.2.3.4"):
             session = Session(headless=True)
             result = session.run("https://example.com")
-            
-            assert result['success'] is True
-            assert result['ip'] == "1.2.3.4"
-            assert result['socks_port'] == 9050
+
+            assert result["success"] is True
+            assert result["ip"] == "1.2.3.4"
+            assert result["socks_port"] == 9050
 
     def test_session_cleanup(self):
         """Test Session.cleanup() releases resources."""
         session = Session()
-        
+
         mock_tor = Mock()
         mock_browser = Mock()
-        
+
         session.tor_instance = mock_tor
         session.browser = mock_browser
-        
+
         session.cleanup()
-        
+
         mock_tor.stop.assert_called_once()
         mock_browser.stop.assert_called_once()
         assert session.tor_instance is None
         assert session.browser is None
 
-    @patch('puppets.tor_manager.TorInstance')
+    @patch("puppets.tor_manager.TorInstance")
     def test_session_context_manager(self, mock_tor_class):
         """Test Session as context manager."""
         mock_tor = Mock()
@@ -147,14 +149,14 @@ class TestSession:
         mock_tor.start = Mock()
         mock_tor_class.return_value = mock_tor
 
-        with patch('puppets.session.wait_for_tor', return_value="1.2.3.4"):
-            with patch('puppets.browser.Browser') as mock_browser_class:
+        with patch("puppets.session.wait_for_tor", return_value="1.2.3.4"):
+            with patch("puppets.browser.Browser") as mock_browser_class:
                 mock_browser = Mock()
                 mock_browser.start = Mock()
                 mock_browser_class.return_value = mock_browser
-                
+
                 with Session(headless=True) as session:
                     session.tor_instance = mock_tor
                     assert session.tor_instance is not None
-                
+
                 mock_tor.stop.assert_called_once()

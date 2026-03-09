@@ -43,7 +43,7 @@ class TestExceptions:
         original = ValueError("Original error")
         with pytest.raises(PuppetsError) as exc_info:
             raise TorLaunchError("Wrapped error") from original
-        
+
         assert exc_info.value.__cause__ is original
 
     def test_exception_message(self):
@@ -51,5 +51,5 @@ class TestExceptions:
         msg = "Detailed error message"
         with pytest.raises(PuppetsError) as exc_info:
             raise PuppetsError(msg)
-        
+
         assert str(exc_info.value) == msg

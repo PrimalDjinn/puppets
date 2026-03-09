@@ -9,11 +9,11 @@ A library for running browser sessions through Tor with support for:
 
 Usage:
     from puppets import Session, SessionManager
-    
+
     # Single session
     session = Session()
     result = session.run()
-    
+
     # Multiple parallel sessions
     manager = SessionManager(max_workers=10)
     results = manager.run_sessions(num_sessions=50)
