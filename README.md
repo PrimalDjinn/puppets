@@ -213,6 +213,12 @@ manager: SessionManager = SessionManager(
     tor_timeout=120,  # Tor startup timeout
 )
 
+# You can also customize how long we wait for the browser itself to start.
+# This is helpful when undetected-chromedriver hangs downloading a driver or
+# when a badly‑behaving Chrome instance never responds.
+
+session = Session(headless=False, browser_start_timeout=30)
+
 # Create 5 sessions and add them to the manager
 sessions: List[Session] = []
 for i in range(5):
@@ -251,6 +257,7 @@ manager.cleanup_all()
 | `session_id`  | str  | auto-generated | Custom session identifier       |
 | `headless`    | bool | False          | Run browser without GUI         |
 | `tor_timeout` | int  | 120            | Seconds to wait for Tor startup |
+| `browser_start_timeout` | int | 30 | Seconds to wait for Chrome/ChromeDriver to launch before failing |
 
 ### SessionManager Options
 
