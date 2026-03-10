@@ -100,6 +100,25 @@ class TestSession:
         session = Session(headless=True)
         assert session.headless is True
 
+    def test_browser_timeout_parameter(self):
+        """Session should record and propagate browser_start_timeout."""
+        session = Session(browser_start_timeout=99)
+        assert session.browser_start_timeout == 99
+
+        with patch("puppets.session.Browser") as mock_browser_class:
+            mock_browser = Mock()
+            mock_browser.start = Mock()
+            mock_browser_class.return_value = mock_browser
+
+            # start() needs to use the timeout value when instantiating Browser
+            session.start()
+            mock_browser_class.assert_called_with(
+                socks_port=None,
+                headless=False,
+                flags=[],
+                start_timeout=99,
+            )
+
     @patch("puppets.session.TorInstance")
     @patch("puppets.session.Browser")
     def test_session_run(self, mock_browser_class, mock_tor_class):
