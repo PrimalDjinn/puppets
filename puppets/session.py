@@ -4,7 +4,7 @@ import time
 import uuid
 import socket
 import logging
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 
 import requests
 
@@ -87,6 +87,7 @@ class Session:
         session_id: Optional[str] = None,
         headless: bool = False,
         tor_timeout: int = 120,
+        flags: Optional[List[str]] = None,
     ):
         """Initialize a new session.
 
@@ -94,10 +95,12 @@ class Session:
             session_id: Optional custom session ID. Auto-generated if not provided.
             headless: Whether to run browser in headless mode.
             tor_timeout: Seconds to wait for Tor to start.
+            flags: Optional list of Chrome flags to pass to the browser.
         """
         self.session_id = session_id or str(uuid.uuid4())[:8]
         self.headless = headless
         self.tor_timeout = tor_timeout
+        self.flags = flags or []
 
         self.tor_instance: Optional[TorInstance] = None
         self.browser: Optional[Browser] = None
@@ -151,7 +154,7 @@ class Session:
         # Start browser
         logger.info(f"[{self.session_id}] Starting browser...")
         self.browser = Browser(
-            socks_port=self.tor_instance.socks_port, headless=self.headless
+            socks_port=self.tor_instance.socks_port, headless=self.headless, flags=self.flags
         )
         self._driver = self.browser.start()
         logger.info(f"[{self.session_id}] Browser ready")
@@ -219,7 +222,7 @@ class Session:
             # Start browser
             logger.info(f"[{self.session_id}] Starting browser...")
             self.browser = Browser(
-                socks_port=self.tor_instance.socks_port, headless=self.headless
+                socks_port=self.tor_instance.socks_port, headless=self.headless, flags=self.flags
             )
             self._driver = self.browser.start()
             if self._driver is None:
