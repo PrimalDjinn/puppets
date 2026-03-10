@@ -4,6 +4,7 @@ import os
 import socket
 import shutil
 import logging
+import threading
 from typing import Tuple, Optional, Any
 
 from stem import process
@@ -109,6 +110,33 @@ class TorInstance:
         def _init_msg(msg: str) -> None:
             logger.debug("tor: %s", msg)
 
+        # stem's timeout uses signal.alarm, which only works on the main thread.
+        # When called from a background thread, we implement our own timeout
+        # using a watchdog timer that kills the Tor subprocess if it stalls.
+        on_main_thread = threading.current_thread() is threading.main_thread()
+        effective_timeout = self._timeout if on_main_thread else None
+
+        timed_out = threading.Event()
+        watchdog: Optional[threading.Timer] = None
+
+        if not on_main_thread and self._timeout:
+            logger.debug(
+                "Not on main thread — using manual %ss timeout for Tor launch",
+                self._timeout,
+            )
+
+            def _kill_on_timeout():
+                timed_out.set()
+                logger.error("Tor launch timed out after %ss", self._timeout)
+                # Kill the Tor subprocess that stem is waiting on.
+                # This causes launch_tor_with_config to return/raise.
+                if self.process:
+                    self.process.kill()
+
+            watchdog = threading.Timer(self._timeout, _kill_on_timeout)
+            watchdog.daemon = True
+            watchdog.start()
+
         try:
             self.process = process.launch_tor_with_config(
                 tor_cmd=tor_cmd,
@@ -117,11 +145,16 @@ class TorInstance:
                     "ControlPort": str(self.control_port),
                     "CookieAuthentication": "1",
                 },
-                timeout=self._timeout,
+                timeout=effective_timeout,
                 init_msg_handler=_init_msg,
                 take_ownership=True,
             )
         except OSError as exc:
+            if timed_out.is_set():
+                raise TorLaunchError(
+                    f"Tor failed to bootstrap within {self._timeout}s.\n"
+                    "Try increasing the timeout or check your network connection."
+                ) from exc
             raise TorLaunchError(
                 f"Failed to start Tor process: {exc}\n"
                 "This may be caused by:\n"
@@ -132,10 +165,18 @@ class TorInstance:
                 "Try running 'tor' manually to see any error messages."
             ) from exc
         except Exception as exc:
+            if timed_out.is_set():
+                raise TorLaunchError(
+                    f"Tor failed to bootstrap within {self._timeout}s.\n"
+                    "Try increasing the timeout or check your network connection."
+                ) from exc
             raise TorLaunchError(
                 f"Unexpected error starting Tor: {exc}\n"
                 "Please check that Tor is properly installed and configured."
             ) from exc
+        finally:
+            if watchdog is not None:
+                watchdog.cancel()
 
         return self.process, self.socks_port, self.control_port
 
