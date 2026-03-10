@@ -1,323 +1,306 @@
-"""Parallel session management."""
+"""Single session management."""
 
-import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Any, Optional, Callable, Iterator
+import socket
+import logging
+from typing import Optional, Dict, Any, Callable, List
 
-from puppets.session import Session
-from puppets.exceptions import PuppetsError
+import requests
+
+from puppets.tor_manager import TorInstance
+from puppets.browser import Browser
+from puppets.exceptions import TorConnectionError, BrowserError
 
 logger = logging.getLogger(__name__)
 
+IP_CHECK_URL = "https://api.ipify.org"
 
-class SessionManager:
-    """Manages multiple parallel browser sessions.
 
-    This class handles running multiple sessions concurrently using
-    thread pools. Each session gets its own Tor instance and browser.
+def is_port_open(host: str, port: int, timeout: float = 1.0) -> bool:
+    """Check if a port is accepting connections."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect((host, port))
+        return True
+    except Exception:
+        return False
+    finally:
+        s.close()
 
-    The SessionManager can:
-    - Accept Session instances created by the user
-    - Create new sessions programmatically
-    - Run sessions in parallel
-    - Execute actions on all session drivers
+
+def check_tor_proxy(socks_port: int, url: str = IP_CHECK_URL) -> str:
+    """Verify Tor proxy is working and return the IP."""
+    proxies = {
+        "http": f"socks5h://127.0.0.1:{socks_port}",
+        "https": f"socks5h://127.0.0.1:{socks_port}",
+    }
+    try:
+        resp = requests.get(url, proxies=proxies, timeout=15)
+        resp.raise_for_status()
+        return resp.text.strip()
+    except requests.exceptions.ConnectionError as exc:
+        raise TorConnectionError(
+            f"Cannot connect to Tor SOCKS proxy at localhost:{socks_port}"
+        ) from exc
+    except requests.exceptions.Timeout as exc:
+        raise TorConnectionError("Request timed out through Tor proxy") from exc
+    except requests.exceptions.RequestException as exc:
+        raise TorConnectionError(
+            f"HTTP request failed through Tor proxy: {exc}"
+        ) from exc
+
+
+def wait_for_tor(socks_port: int, timeout: int = 60) -> str:
+    """Wait for Tor proxy to be ready."""
+    start = time.time()
+    last_error = None
+
+    while True:
+        try:
+            return check_tor_proxy(socks_port)
+        except Exception as e:
+            last_error = e
+            if time.time() - start > timeout:
+                raise TorConnectionError(
+                    f"timed out waiting for Tor circuit (last error: {last_error})"
+                ) from last_error
+            time.sleep(1)
+
+
+class Session:
+    """A single browser session with its own Tor instance.
+
+    This is the main class for running a single session. Each session
+    gets its own fresh Tor instance, ensuring a unique IP address.
 
     Attributes:
-        max_workers: Maximum number of parallel sessions.
-        headless: Whether to run browsers in headless mode.
-        tor_timeout: Timeout for Tor startup per session.
-        sessions: List of Session instances being managed.
+        session_id: Unique identifier for this session.
+        tor_instance: The Tor instance for this session.
+        browser: The browser instance.
+        ip: The current IP address (after Tor connection).
     """
 
     def __init__(
         self,
-        max_workers: int = 10,
+        session_id: Optional[str] = None,
         headless: bool = False,
         tor_timeout: int = 120,
+        flags: Optional[List[str]] = None,
+        use_tor: bool = True,
+        browser_start_timeout: int = 30,
     ):
-        """Initialize the session manager.
+        """Initialize a new session.
 
         Args:
-            max_workers: Maximum number of parallel sessions.
-            headless: Whether to run browsers in headless mode.
-            tor_timeout: Timeout for Tor startup per session.
+            session_id: Optional custom session ID. Auto-generated if not provided.
+            headless: Whether to run browser in headless mode.
+            tor_timeout: Seconds to wait for Tor to start.
+            flags: Optional list of Chrome flags to pass to the browser.
+            use_tor: Whether to start and use a Tor proxy (default: True).
+            browser_start_timeout: Seconds to wait for the browser to start
+                before considering it hung.  Passed through to :class:`Browser`.
         """
-        self.max_workers = max_workers
+        self.session_id = session_id or str(uuid.uuid4())[:8]
         self.headless = headless
         self.tor_timeout = tor_timeout
-        self.sessions: List[Session] = []
+        self.flags = flags or []
+        self.use_tor = use_tor
+        self.browser_start_timeout = browser_start_timeout
+
+        self.tor_instance: Optional[TorInstance] = None
+        self.browser: Optional[Browser] = None
+        self.ip: Optional[str] = None
+        self._driver = None
+
+    @property
+    def driver(self):
+        """Get the Selenium WebDriver instance.
+
+        Returns:
+            The WebDriver instance, or None if the session hasn't been started.
+        """
+        return self._driver
 
     def __repr__(self) -> str:
-        started = sum(1 for s in self.sessions if s.driver is not None)
+        status = "started" if self._driver else "idle"
         return (
-            f"SessionManager(sessions={len(self.sessions)}, "
-            f"started={started}, max_workers={self.max_workers})"
+            f"Session(id={self.session_id!r}, ip={self.ip!r}, "
+            f"headless={self.headless}, status={status!r})"
         )
 
-    def __len__(self) -> int:
-        """Return the number of managed sessions."""
-        return len(self.sessions)
+    def start(self) -> None:
+        """Start the session (Tor + browser).
 
-    def __iter__(self) -> Iterator[Session]:
-        """Iterate over managed sessions."""
-        return iter(self.sessions)
+        This starts Tor and the browser but does NOT navigate to any URL.
+        Use this when you want full control over the driver for DOM manipulation.
 
-    def create_session(self, session_id: Optional[str] = None, **kwargs) -> Session:
-        """Create a new Session and add it to the manager.
-
-        Args:
-            session_id: Optional custom session ID.
-            **kwargs: Additional arguments passed to Session constructor.
-                Supported keys: ``headless``, ``tor_timeout``.
-
-        Returns:
-            The created Session instance.
-        """
-        session = Session(
-            session_id=session_id,
-            headless=kwargs.get("headless", self.headless),
-            tor_timeout=kwargs.get("tor_timeout", self.tor_timeout),
-            flags=kwargs.get("flags"),
-        )
-        self.sessions.append(session)
-        return session
-
-    def add_session(self, session: Session) -> None:
-        """Add an existing Session to the manager.
-
-        Args:
-            session: A Session instance to manage.
-        """
-        self.sessions.append(session)
-
-    def remove_session(self, session: Session) -> None:
-        """Remove a Session from the manager.
-
-        Note: This does NOT cleanup the session - call session.cleanup() first.
-
-        Args:
-            session: A Session instance to remove.
-        """
-        if session in self.sessions:
-            self.sessions.remove(session)
-
-    def clear_sessions(self) -> None:
-        """Clear all sessions from the manager without cleaning them up."""
-        self.sessions.clear()
-
-    def start_all(self) -> List[Session]:
-        """Start all managed sessions (Tor + browser) in parallel.
-
-        Returns:
-            List of sessions that failed to start. An empty list means
-            all sessions started successfully.
-        """
-        logger.info(
-            f"Starting {len(self.sessions)} sessions with {self.max_workers} workers"
-        )
-
-        failed: List[Session] = []
-
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(self._start_session, s): s for s in self.sessions
-            }
-
-            for future in as_completed(futures):
-                session = futures[future]
-                try:
-                    future.result()
-                    logger.info(f"[{session.session_id}] Started successfully")
-                except Exception as exc:
-                    logger.error(f"[{session.session_id}] Failed to start: {exc}")
-                    failed.append(session)
-
-        return failed
-
-    def _start_session(self, session: Session) -> None:
-        """Internal method to start a single session."""
-        session.start()
-
-    def run_action(self, action: Callable[[Any], Any]) -> List[Dict[str, Any]]:
-        """Run an action on all session drivers in parallel.
-
-        Args:
-            action: A callable that takes a WebDriver as its argument.
-                The action will be run on each session's driver.
-
-        Returns:
-            List of result dictionaries with success status and any errors.
+        After calling start(), you can use self.driver to:
+        - Navigate to URLs
+        - Find and click elements
+        - Fill forms
+        - Execute JavaScript
+        - Take screenshots
+        - Any other Selenium operations
 
         Raises:
-            PuppetsError: If any session has not been started (driver is None).
+            TorConnectionError: If Tor fails to start or connect.
+            BrowserError: If browser fails to start.
         """
-        results: List[Dict[str, Any]] = []
+        if self.use_tor:
+            # Start Tor
+            logger.info(f"[{self.session_id}] Starting Tor instance...")
+            self.tor_instance = TorInstance(timeout=self.tor_timeout)
+            self.tor_instance.start()
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {}
-            for session in self.sessions:
-                future = executor.submit(self._run_action_on_session, session, action)
-                futures[future] = session.session_id
+            # Verify Tor is working
+            logger.info(f"[{self.session_id}] Verifying Tor connection...")
+            self.ip = wait_for_tor(self.tor_instance.socks_port)
+            logger.info(f"[{self.session_id}] Tor ready with IP: {self.ip}")
+            socks_port = self.tor_instance.socks_port
+        else:
+            logger.info(f"[{self.session_id}] Tor disabled. Using direct connection.")
+            self.ip = "direct"
+            socks_port = None
 
-            for future in as_completed(futures):
-                session_id = futures[future]
-                try:
-                    result = future.result()
-                    results.append(
-                        {"session_id": session_id, "success": True, "result": result}
-                    )
-                except Exception as exc:
-                    logger.error(f"Action failed for {session_id}: {exc}")
-                    results.append(
-                        {"session_id": session_id, "success": False, "error": str(exc)}
-                    )
+        # Start browser
+        logger.info(f"[{self.session_id}] Starting browser...")
+        self.browser = Browser(
+            socks_port=socks_port,
+            headless=self.headless,
+            flags=self.flags,
+            start_timeout=self.browser_start_timeout,
+        )
+        self._driver = self.browser.start()
+        logger.info(f"[{self.session_id}] Browser ready")
 
-        return results
-
-    def _run_action_on_session(
-        self, session: Session, action: Callable[[Any], Any]
-    ) -> Any:
-        """Run an action on a single session's driver."""
-        if session.driver is None:
-            raise PuppetsError(
-                f"Session {session.session_id!r} has no driver. "
-                f"Call start_all() before run_action()."
-            )
-        return action(session.driver)
-
-    def cleanup_all(self) -> None:
-        """Cleanup all managed sessions.
-
-        Stops all browsers and Tor instances, then clears the session list.
-        """
-        logger.info(f"Cleaning up {len(self.sessions)} sessions")
-
-        for session in self.sessions:
-            try:
-                session.cleanup()
-            except Exception as exc:
-                logger.error(f"Error cleaning up session {session.session_id}: {exc}")
-
-        self.sessions.clear()
-
-    def run_sessions(
-        self,
-        num_sessions: int = 10,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-        **kwargs,
-    ) -> List[Dict[str, Any]]:
-        """Run multiple sessions in parallel.
-
-        Creates new sessions, runs them, and returns results.
-        For more control, use create_session()/add_session() and start_all().
+    def navigate(self, url: str) -> None:
+        """Navigate to a URL.
 
         Args:
-            num_sessions: Number of sessions to run.
-            progress_callback: Optional callback(completed, total) for progress.
+            url: The URL to navigate to.
+
+        Raises:
+            RuntimeError: If the session has not been started.
+        """
+        if not self._driver:
+            raise RuntimeError("Session not started. Call start() first.")
+        self._driver.get(url)
+
+    def run(
+        self,
+        url: str = IP_CHECK_URL,
+        action_callback: Optional[Callable[[Any], None]] = None,
+    ) -> Dict[str, Any]:
+        """Run a complete session.
+
+        This will:
+        1. Start a fresh Tor instance
+        2. Verify Tor is working
+        3. Start the browser
+        4. Navigate to the URL
+        5. Optionally execute custom actions via callback
+
+        Args:
+            url: URL to navigate to after browser starts.
+            action_callback: Optional callback function that receives the WebDriver
+                           instance for custom browser actions.
 
         Returns:
-            List of result dictionaries, one per session.
+            Dictionary with session results:
+                - session_id: The session ID
+                - ip: The IP address through Tor
+                - socks_port: The Tor SOCKS port used
+                - success: Whether the session completed successfully
+                - error: Error message (only present on failure)
         """
-        results: List[Dict[str, Any]] = []
-        completed = 0
+        result: Dict[str, Any] = {
+            "session_id": self.session_id,
+            "ip": None,
+            "socks_port": None,
+            "success": False,
+        }
 
-        logger.info(f"Starting {num_sessions} sessions with {self.max_workers} workers")
+        try:
+            if self.use_tor:
+                # Start Tor
+                logger.info(f"[{self.session_id}] Starting Tor instance...")
+                self.tor_instance = TorInstance(timeout=self.tor_timeout)
+                self.tor_instance.start()
+                result["socks_port"] = self.tor_instance.socks_port
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # Submit all sessions
-            futures = {}
-            for i in range(num_sessions):
-                session_id = f"session_{i+1}_{uuid.uuid4().hex[:6]}"
-                session = Session(
-                    session_id=session_id,
-                    headless=self.headless,
-                    tor_timeout=self.tor_timeout,
-                    flags=kwargs.get("flags"),
+                # Verify Tor is working
+                logger.info(f"[{self.session_id}] Verifying Tor connection...")
+                self.ip = wait_for_tor(self.tor_instance.socks_port)
+                result["ip"] = self.ip
+                logger.info(f"[{self.session_id}] Tor ready with IP: {self.ip}")
+                socks_port = self.tor_instance.socks_port
+            else:
+                logger.info(
+                    f"[{self.session_id}] Tor disabled. Using direct connection."
                 )
-                future = executor.submit(session.run)
-                futures[future] = session_id
+                self.ip = "direct"
+                result["ip"] = "direct"
+                socks_port = None
 
-            # Collect results as they complete
-            for future in as_completed(futures):
-                session_id = futures[future]
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as exc:
-                    logger.error(f"Session {session_id} raised exception: {exc}")
-                    results.append(
-                        {
-                            "session_id": session_id,
-                            "success": False,
-                            "error": str(exc),
-                        }
-                    )
-
-                completed += 1
-                if progress_callback:
-                    progress_callback(completed, num_sessions)
-                else:
-                    logger.info(f"Completed {completed}/{num_sessions} sessions")
-
-        # Summary
-        successful = sum(1 for r in results if r.get("success", False))
-        logger.info(f"All sessions completed: {successful}/{num_sessions} successful")
-
-        return results
-
-    def run_continuous(
-        self,
-        duration_seconds: int = 3600,
-        interval_seconds: int = 10,
-    ) -> List[Dict[str, Any]]:
-        """Run sessions sequentially for a duration.
-
-        Each session runs one at a time with a pause between them.
-        For parallel execution, use run_sessions() or start_all() instead.
-
-        Args:
-            duration_seconds: Total time to run.
-            interval_seconds: Time between session starts.
-
-        Returns:
-            List of all session results.
-        """
-        results: List[Dict[str, Any]] = []
-        start_time = time.time()
-        session_num = 0
-
-        logger.info(f"Starting continuous mode for {duration_seconds} seconds")
-
-        while time.time() - start_time < duration_seconds:
-            session_num += 1
-            session_id = f"continuous_{session_num}_{uuid.uuid4().hex[:6]}"
-
-            logger.info(f"Starting session {session_num}...")
-            session = Session(
-                session_id=session_id,
+            # Start browser
+            logger.info(f"[{self.session_id}] Starting browser...")
+            self.browser = Browser(
+                socks_port=socks_port,
                 headless=self.headless,
-                tor_timeout=self.tor_timeout,
+                flags=self.flags,
+                start_timeout=self.browser_start_timeout,
             )
+            self._driver = self.browser.start()
+            if self._driver is None:
+                raise BrowserError("Browser started but returned no driver")
+
+            # Navigate to URL
+            logger.info(f"[{self.session_id}] Navigating to {url}...")
+            self._driver.get(url)
+            time.sleep(2)  # Brief pause for initial page load
+
+            # Execute custom actions if provided
+            if action_callback:
+                logger.info(f"[{self.session_id}] Executing custom actions...")
+                action_callback(self._driver)
+
+            result["success"] = True
+            logger.info(f"[{self.session_id}] Session completed successfully")
+
+        except Exception as exc:
+            result["error"] = str(exc)
+            logger.error(f"[{self.session_id}] Session failed: {exc}")
+
+        finally:
+            self.cleanup()
+
+        return result
+
+    def cleanup(self) -> None:
+        """Clean up all resources."""
+        if self.browser:
             try:
-                result = session.run()
-                results.append(result)
-            except Exception as exc:
-                results.append(
-                    {
-                        "session_id": session_id,
-                        "success": False,
-                        "error": str(exc),
-                    }
-                )
+                self.browser.stop()
+            except Exception:
+                pass
+            self.browser = None
 
-            # Wait before next session
-            elapsed = time.time() - start_time
-            if elapsed + interval_seconds < duration_seconds:
-                time.sleep(interval_seconds)
+        if self.tor_instance:
+            try:
+                self.tor_instance.stop()
+            except Exception:
+                pass
+            self.tor_instance = None
 
-        successful = sum(1 for r in results if r.get("success", False))
-        logger.info(f"Continuous mode ended: {successful}/{len(results)} successful")
+        self._driver = None
 
-        return results
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.cleanup()
+        return False
