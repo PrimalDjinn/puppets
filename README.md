@@ -94,6 +94,22 @@ pip install -e .
 | **Google Chrome** | [https://www.google.com/chrome/](https://www.google.com/chrome/)       |
 | **Python ≥ 3.9**  | [https://www.python.org/downloads/](https://www.python.org/downloads/) |
 
+> ### 🪟 Windows users
+>
+> The load test tooling has first‑class support for Windows:
+>
+> * Chrome/Chromium is detected automatically via `PATH` or the
+>   usual `Program Files` installation paths.  On Windows we also
+>   query the registry, so the browser does **not** need to be on your
+>   PATH as long as it was installed normally.  If you still see a
+>   `ChromeNotFoundError` please install Chrome or add the binary to
+>   your `PATH` (the error message points to the download link).
+> * The lightweight HTTP server used for screenshot files enables
+>   `SO_REUSEADDR` so you can restart the test runner without
+>   waiting for sockets to time out.  If another program already has the
+>   port bound we simply log an error and continue – the test run is
+>   unaffected.
+
 > **Note:** You no longer need to download ChromeDriver manually — `undetected-chromedriver` handles that automatically.
 
 ## Quick Start
