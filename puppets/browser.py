@@ -6,6 +6,9 @@ import logging
 import platform
 import shutil
 import os
+import time
+import threading
+import tempfile
 from typing import Optional, List
 
 import undetected_chromedriver as uc
@@ -13,9 +16,12 @@ from puppets.exceptions import BrowserError, ChromeNotFoundError
 
 logger = logging.getLogger(__name__)
 
+_uc_patch_lock = threading.Lock()
+_browser_start_serial_lock = threading.Lock()
+
 
 def _read_chrome_version_from_registry() -> Optional[int]:
-    """Try to read the version string from the Windows registry.
+    r"""Try to read the version string from the Windows registry.
 
     Chrome keeps its version in two possible locations depending on whether
     it's installed for the current user or all users.  We look under both
@@ -29,10 +35,10 @@ def _read_chrome_version_from_registry() -> Optional[int]:
     except ImportError:  # not on Windows
         return None
 
-    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):  # type: ignore
         try:
-            key = winreg.OpenKey(hive, r"Software\Google\Chrome\BLBeacon")
-            version_str, _ = winreg.QueryValueEx(key, "version")
+            key = winreg.OpenKey(hive, r"Software\Google\Chrome\BLBeacon")  # type: ignore
+            version_str, _ = winreg.QueryValueEx(key, "version")  # type: ignore
             m = re.search(r"(\d+)", version_str)
             if m:
                 return int(m.group(1))
@@ -83,6 +89,7 @@ def detect_chrome_version() -> Optional[int]:
             if not os.path.exists(chrome_cmd):
                 continue
 
+        version: int | None = None
         try:
             out = subprocess.check_output(
                 [chrome_cmd, "--version"], stderr=subprocess.DEVNULL
@@ -125,7 +132,7 @@ class Browser:
         socks_port: Optional[int] = None,
         headless: bool = False,
         flags: Optional[List[str]] = None,
-        start_timeout: int = 30,
+        start_timeout: int | float = 30,
     ):
         """Initialize a new browser.
 
@@ -143,6 +150,25 @@ class Browser:
         self.flags = flags or []
         self._version_main: Optional[int] = None
         self.start_timeout = start_timeout
+        self._temp_dir: Optional[str] = None
+
+    def _build_options(self):
+        opts = uc.ChromeOptions()
+        if self.socks_port:
+            proxy = f"socks5://127.0.0.1:{self.socks_port}"
+            opts.add_argument(f"--proxy-server={proxy}")
+            opts.add_argument(
+                "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"
+            )
+            opts.add_argument("--proxy-bypass-list=<-loopback>")
+
+        if self.headless:
+            opts.add_argument("--headless=new")
+
+        for flag in self.flags:
+            opts.add_argument(flag)
+
+        return opts
 
     def start(self) -> uc.Chrome:
         """Start the browser with Tor proxy.
@@ -167,20 +193,7 @@ class Browser:
                 "The browser is required for this script to work."
             )
 
-        opts = uc.ChromeOptions()
-        if self.socks_port:
-            PROXY = f"socks5://127.0.0.1:{self.socks_port}"
-            opts.add_argument(f"--proxy-server={PROXY}")
-            opts.add_argument(
-                "--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1"
-            )
-            opts.add_argument("--proxy-bypass-list=<-loopback>")
-
-        if self.headless:
-            opts.add_argument("--headless=new")
-
-        for flag in self.flags:
-            opts.add_argument(flag)
+        opts = self._build_options()
 
         logger.debug(
             "Starting Chrome with options: socks_port=%s, headless=%s, flags=%s, "
@@ -192,45 +205,90 @@ class Browser:
             self.start_timeout,
         )
 
-        # Attempt to start Chrome; wrap in a timeout so we don't hang indefinitely
-        # (undetected-chromedriver may block while downloading a matching driver,
-        # or if the handshake with the browser never completes).  Using a thread
-        # executor allows us to enforce a wall‑clock timeout.
-        import concurrent.futures
+        with _browser_start_serial_lock:
+            # Entire Chrome startup is locked to serialize binary copying and process launch.
+            # This completely avoids resource thrashing and parallel file access collisions.
 
-        def _launch():
-            if self._version_main:
-                return uc.Chrome(options=opts, version_main=self._version_main)
-            else:
-                return uc.Chrome(options=opts)
+            # Ensure the default undetected_chromedriver binary is downloaded/patched
+            # under a global lock to prevent parallel download/write conflicts.
+            orig_path = None
+            try:
+                with _uc_patch_lock:
+                    patcher = uc.Patcher()
+                    orig_path = patcher.executable_path
+                    if not orig_path or not os.path.exists(orig_path):
+                        patcher.auto()
+                        orig_path = patcher.executable_path
+            except Exception as e:
+                logger.debug("Could not resolve or patch base undetected_chromedriver binary: %s", e)
 
-        start_time = time.time()
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_launch)
-                # allow callers to override timeout by passing start_timeout attr
-                timeout = getattr(self, "start_timeout", 30)
-                self.driver = future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError as exc:
-            raise BrowserError(
-                f"Timed out after {timeout} seconds while starting Chrome/ChromeDriver"
-            ) from exc
-        except Exception as exc:
-            error_msg = str(exc).lower()
-            if "chromedriver" in error_msg or "chrome" in error_msg:
+            # Copy the executable to a unique per-session path to avoid sharing/disk conflicts
+            custom_driver_path = None
+            if orig_path and os.path.exists(orig_path):
+                try:
+                    self._temp_dir = tempfile.mkdtemp(prefix="puypets_")
+                    custom_driver_path = os.path.join(self._temp_dir, "chromedriver")
+                    shutil.copy2(orig_path, custom_driver_path)
+                    os.chmod(custom_driver_path, 0o755)
+                    logger.debug("Isolated chromedriver binary created: %s", custom_driver_path)
+                except Exception as e:
+                    logger.warning("Failed to create isolated chromedriver copy, using default: %s", e)
+                    if self._temp_dir and os.path.exists(self._temp_dir):
+                        shutil.rmtree(self._temp_dir, ignore_errors=True)
+                        self._temp_dir = None
+
+            # Attempt to start Chrome; wrap in a timeout so we don't hang indefinitely
+            # (undetected-chromedriver may block while downloading a matching driver,
+            # or if the handshake with the browser never completes).  Using a thread
+            # executor allows us to enforce a wall‑clock timeout.
+            import concurrent.futures
+
+            def _launch():
+                if custom_driver_path:
+                    if self._version_main:
+                        return uc.Chrome(
+                            options=opts,
+                            version_main=self._version_main,
+                            driver_executable_path=custom_driver_path,
+                        )
+                    else:
+                        return uc.Chrome(
+                            options=opts,
+                            driver_executable_path=custom_driver_path,
+                        )
+                else:
+                    if self._version_main:
+                        return uc.Chrome(options=opts, version_main=self._version_main)
+                    else:
+                        return uc.Chrome(options=opts)
+
+            start_time = time.time()
+            timeout = int(getattr(self, "start_timeout", 99))
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_launch)
+                    # allow callers to override timeout by passing start_timeout attr
+                    self.driver = future.result(timeout=timeout)
+            except concurrent.futures.TimeoutError as exc:
                 raise BrowserError(
-                    f"Failed to start Chrome/ChromeDriver: {exc}\n"
-                    "This may be caused by:\n"
-                    "  - ChromeDriver version mismatch with your Chrome version\n"
-                    "  - Missing Chrome browser installation\n"
-                    "  - Permission issues running Chrome/ChromeDriver\n"
-                    "Try updating Chrome and reinstalling undetected-chromedriver:\n"
-                    "  pip install --upgrade undetected-chromedriver"
+                    f"Timed out after {timeout} seconds while starting Chrome/ChromeDriver"
                 ) from exc
-            raise
-        finally:
-            elapsed = time.time() - start_time
-            logger.debug(f"uc.Chrome() returned after {elapsed:.1f}s")
+            except Exception as exc:
+                error_msg = str(exc).lower()
+                if "chromedriver" in error_msg or "chrome" in error_msg:
+                    raise BrowserError(
+                        f"Failed to start Chrome/ChromeDriver: {exc}\n"
+                        "This may be caused by:\n"
+                        "  - ChromeDriver version mismatch with your Chrome version\n"
+                        "  - Missing Chrome browser installation\n"
+                        "  - Permission issues running Chrome/ChromeDriver\n"
+                        "Try updating Chrome and reinstalling undetected-chromedriver:\n"
+                        "  pip install --upgrade undetected-chromedriver"
+                    ) from exc
+                raise
+            finally:
+                elapsed = time.time() - start_time
+                logger.debug(f"uc.Chrome() returned after {elapsed:.1f}s")
 
         return self.driver
 
@@ -242,6 +300,13 @@ class Browser:
             except Exception:
                 pass
             self.driver = None
+
+        if hasattr(self, "_temp_dir") and self._temp_dir and os.path.exists(self._temp_dir):
+            try:
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._temp_dir = None
 
     def __repr__(self) -> str:
         status = "running" if self.driver else "stopped"
