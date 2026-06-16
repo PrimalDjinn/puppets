@@ -145,7 +145,7 @@ class TorInstance:
                     "ControlPort": str(self.control_port),
                     "CookieAuthentication": "1",
                 },
-                timeout=effective_timeout,
+                timeout=effective_timeout or 99,
                 init_msg_handler=_init_msg,
                 take_ownership=True,
             )
@@ -187,7 +187,7 @@ class TorInstance:
             TorConnectionError: If authentication or signal fails.
         """
         try:
-            self._controller = Controller.from_port(port=self.control_port)
+            self._controller = Controller.from_port(port=str(self.control_port))
             self._controller.authenticate()
             self._controller.signal(Signal.NEWNYM)  # type: ignore
         except Exception as exc:
