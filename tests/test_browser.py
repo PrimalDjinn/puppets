@@ -56,24 +56,28 @@ class TestDetectChromeVersion:
         monkeypatch.setattr(platform, "system", lambda: "Windows")
         # ensure which resolves so the loop tries the command
         monkeypatch.setattr(shutil, "which", lambda cmd: cmd)
+        monkeypatch.setattr(
+            "puppets.browser._read_chrome_version_from_registry",
+            lambda: None,
+        )
         mock_check_output.return_value = b"Google Chrome 120.0.6099.109"
         version = detect_chrome_version()
         assert version == 120
 
     @patch("puppets.browser.subprocess.check_output")
-    def test_windows_running_chrome_uses_registry(self, mock_check_output, monkeypatch):
-        """If invoking the binary returns the "opening" message, fallback to registry."""
+    def test_windows_uses_registry_before_launching_chrome(
+        self, mock_check_output, monkeypatch
+    ):
+        """Windows should avoid launching Chrome just to read its version."""
         monkeypatch.setattr(platform, "system", lambda: "Windows")
         monkeypatch.setattr(shutil, "which", lambda cmd: cmd)
-        # binary output that lacks a version number
-        mock_check_output.return_value = b"Opening in existing browser session."
-        # mock registry function to return version
         monkeypatch.setattr(
             "puppets.browser._read_chrome_version_from_registry",
             lambda: 123,
         )
         version = detect_chrome_version()
         assert version == 123
+        mock_check_output.assert_not_called()
 
     def test_registry_lookup_only(self, monkeypatch):
         """Registry reader returns value even if no executables are present."""
