@@ -9,6 +9,7 @@ import os
 import time
 import threading
 import tempfile
+import queue
 from typing import Optional, List
 
 import undetected_chromedriver as uc
@@ -120,6 +121,61 @@ def detect_chrome_version() -> Optional[int]:
     return None
 
 
+def detect_chromedriver_version(driver_path: str) -> Optional[int]:
+    """Detect the ChromeDriver major version for an executable path."""
+    try:
+        out = subprocess.check_output(
+            [driver_path, "--version"], stderr=subprocess.DEVNULL, timeout=10
+        )
+    except Exception as exc:
+        logger.debug("failed to get ChromeDriver version from %s: %s", driver_path, exc)
+        return None
+
+    m = re.search(r"ChromeDriver\s+(\d+)", out.decode(errors="replace"))
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def resolve_chromedriver_executable(version_main: int) -> str:
+    """Resolve a ChromeDriver executable compatible with the browser version."""
+    override_path = os.environ.get("PUPPETS_CHROMEDRIVER_PATH")
+    if override_path:
+        if not os.path.exists(override_path):
+            raise BrowserError(
+                "PUPPETS_CHROMEDRIVER_PATH points to a missing file: "
+                f"{override_path}"
+            )
+        override_version = detect_chromedriver_version(override_path)
+        if override_version is not None and override_version != version_main:
+            raise BrowserError(
+                "PUPPETS_CHROMEDRIVER_PATH points to ChromeDriver "
+                f"{override_version}, but Chrome is {version_main}: {override_path}"
+            )
+        return override_path
+
+    patcher = uc.Patcher(version_main=version_main)
+    executable_path = patcher.executable_path
+    if executable_path and os.path.exists(executable_path):
+        driver_version = detect_chromedriver_version(executable_path)
+        if driver_version == version_main:
+            return executable_path
+        logger.info(
+            "Refreshing ChromeDriver cache: found version %s, need %s",
+            driver_version or "unknown",
+            version_main,
+        )
+
+    patcher.auto(version_main=version_main)
+    executable_path = patcher.executable_path
+    if not executable_path or not os.path.exists(executable_path):
+        raise BrowserError(
+            "undetected-chromedriver did not provide a ChromeDriver executable "
+            f"for Chrome {version_main}"
+        )
+    return executable_path
+
+
 class Browser:
     """Manages a Chrome/Chromium browser instance.
 
@@ -187,7 +243,7 @@ class Browser:
             raise ChromeNotFoundError(
                 "No Chrome/Chromium browser found. Please install one of:\n"
                 "  - Google Chrome: https://www.google.com/chrome/ (Windows/Mac/Linux)\n"
-                "  - Chromium: sudo apt install chromium-browser (Debian/Ubuntu)\n"
+                "  - Chromium: sudo apt install chromium (Debian/Ubuntu)\n"
                 "  - brew install chromium (macOS)\n"
                 "On Windows the installer is available from the Chrome website above.\n"
                 "The browser is required for this script to work."
@@ -209,40 +265,44 @@ class Browser:
             # Entire Chrome startup is locked to serialize binary copying and process launch.
             # This completely avoids resource thrashing and parallel file access collisions.
 
-            # Ensure the default undetected_chromedriver binary is downloaded/patched
-            # under a global lock to prevent parallel download/write conflicts.
+            # Resolve/download the ChromeDriver binary under a global lock to
+            # prevent parallel download/write conflicts.
             orig_path = None
             try:
                 with _uc_patch_lock:
-                    patcher = uc.Patcher()
-                    orig_path = patcher.executable_path
-                    if not orig_path or not os.path.exists(orig_path):
-                        patcher.auto()
-                        orig_path = patcher.executable_path
+                    orig_path = resolve_chromedriver_executable(self._version_main)
+            except BrowserError:
+                raise
             except Exception as e:
-                logger.debug("Could not resolve or patch base undetected_chromedriver binary: %s", e)
+                logger.debug(
+                    "Could not resolve compatible undetected_chromedriver binary: %s",
+                    e,
+                )
 
             # Copy the executable to a unique per-session path to avoid sharing/disk conflicts
             custom_driver_path = None
             if orig_path and os.path.exists(orig_path):
                 try:
                     self._temp_dir = tempfile.mkdtemp(prefix="puypets_")
-                    custom_driver_path = os.path.join(self._temp_dir, "chromedriver")
+                    custom_driver_path = os.path.join(
+                        self._temp_dir, os.path.basename(orig_path)
+                    )
                     shutil.copy2(orig_path, custom_driver_path)
                     os.chmod(custom_driver_path, 0o755)
-                    logger.debug("Isolated chromedriver binary created: %s", custom_driver_path)
+                    logger.debug(
+                        "Isolated chromedriver binary created: %s", custom_driver_path
+                    )
                 except Exception as e:
-                    logger.warning("Failed to create isolated chromedriver copy, using default: %s", e)
+                    logger.warning(
+                        "Failed to create isolated chromedriver copy, using default: %s",
+                        e,
+                    )
                     if self._temp_dir and os.path.exists(self._temp_dir):
                         shutil.rmtree(self._temp_dir, ignore_errors=True)
                         self._temp_dir = None
 
-            # Attempt to start Chrome; wrap in a timeout so we don't hang indefinitely
-            # (undetected-chromedriver may block while downloading a matching driver,
-            # or if the handshake with the browser never completes).  Using a thread
-            # executor allows us to enforce a wall‑clock timeout.
-            import concurrent.futures
-
+            # Attempt to start Chrome; wrap in a daemon thread so a stuck
+            # ChromeDriver handshake cannot pin the caller indefinitely.
             def _launch():
                 if custom_driver_path:
                     if self._version_main:
@@ -264,12 +324,41 @@ class Browser:
 
             start_time = time.time()
             timeout = int(getattr(self, "start_timeout", 99))
+            result_queue: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+            timed_out = threading.Event()
+
+            def _launch_worker():
+                try:
+                    driver = _launch()
+                except Exception as exc:
+                    if not timed_out.is_set():
+                        result_queue.put(("error", exc))
+                    return
+
+                if timed_out.is_set():
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    return
+
+                result_queue.put(("driver", driver))
+
+            launch_thread = threading.Thread(
+                target=_launch_worker,
+                name="puypets-chrome-launch",
+                daemon=True,
+            )
             try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_launch)
-                    # allow callers to override timeout by passing start_timeout attr
-                    self.driver = future.result(timeout=timeout)
-            except concurrent.futures.TimeoutError as exc:
+                launch_thread.start()
+                status, payload = result_queue.get(timeout=timeout)
+                if status == "error":
+                    if isinstance(payload, Exception):
+                        raise payload
+                    raise RuntimeError(payload)
+                self.driver = payload  # type: ignore[assignment]
+            except queue.Empty as exc:
+                timed_out.set()
                 raise BrowserError(
                     f"Timed out after {timeout} seconds while starting Chrome/ChromeDriver"
                 ) from exc
@@ -282,8 +371,9 @@ class Browser:
                         "  - ChromeDriver version mismatch with your Chrome version\n"
                         "  - Missing Chrome browser installation\n"
                         "  - Permission issues running Chrome/ChromeDriver\n"
-                        "Try updating Chrome and reinstalling undetected-chromedriver:\n"
-                        "  pip install --upgrade undetected-chromedriver"
+                        "Try refreshing the driver cache, upgrading "
+                        "undetected-chromedriver, or setting "
+                        "PUPPETS_CHROMEDRIVER_PATH to a matching ChromeDriver."
                     ) from exc
                 raise
             finally:
@@ -301,7 +391,11 @@ class Browser:
                 pass
             self.driver = None
 
-        if hasattr(self, "_temp_dir") and self._temp_dir and os.path.exists(self._temp_dir):
+        if (
+            hasattr(self, "_temp_dir")
+            and self._temp_dir
+            and os.path.exists(self._temp_dir)
+        ):
             try:
                 shutil.rmtree(self._temp_dir, ignore_errors=True)
             except Exception:
