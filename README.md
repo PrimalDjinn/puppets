@@ -383,7 +383,7 @@ results = manager.run_continuous(
 ### Browser Issues
 
 - **Chrome not found** - Install Google Chrome or Chromium
-- **ChromeDriver version mismatch** - Run `pip install -U undetected-chromedriver`
+- **ChromeDriver version mismatch** - Chrome auto-updated but the cached driver is old. Run `pip install -U undetected-chromedriver`, clear `%APPDATA%\undetected_chromedriver` on Windows, or set `PUPPETS_CHROMEDRIVER_PATH` to a matching `chromedriver.exe`.
 - **Permission denied** - Ensure Chrome is installed in a accessible location
 
 ### Performance
