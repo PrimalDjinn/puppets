@@ -71,6 +71,10 @@ def detect_chrome_version() -> Optional[int]:
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files\Chromium\Application\chrome.exe",
         ]
+        version = _read_chrome_version_from_registry()
+        if version:
+            logger.debug("detected chrome version %s via registry", version)
+            return version
     else:
         chrome_commands = [
             "google-chrome",
@@ -93,7 +97,7 @@ def detect_chrome_version() -> Optional[int]:
         version: int | None = None
         try:
             out = subprocess.check_output(
-                [chrome_cmd, "--version"], stderr=subprocess.DEVNULL
+                [chrome_cmd, "--version"], stderr=subprocess.DEVNULL, timeout=10
             )
             text = out.decode()
             # some Windows builds (when Chrome is already running) output
@@ -110,13 +114,6 @@ def detect_chrome_version() -> Optional[int]:
         except Exception as e:
             logger.debug("failed to get version from %s: %s", chrome_cmd, e)
             continue
-
-    # registry fallback is only meaningful on Windows
-    if system == "Windows":
-        version = _read_chrome_version_from_registry()
-        if version:
-            logger.debug("detected chrome version %s via registry", version)
-            return version
 
     return None
 
