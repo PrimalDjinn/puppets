@@ -71,10 +71,10 @@ def detect_chrome_version() -> Optional[int]:
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files\Chromium\Application\chrome.exe",
         ]
-        version = _read_chrome_version_from_registry()
-        if version:
-            logger.debug("detected chrome version %s via registry", version)
-            return version
+        registry_version = _read_chrome_version_from_registry()
+        if registry_version:
+            logger.debug("detected chrome version %s via registry", registry_version)
+            return registry_version
     else:
         chrome_commands = [
             "google-chrome",
@@ -94,7 +94,6 @@ def detect_chrome_version() -> Optional[int]:
             if not os.path.exists(chrome_cmd):
                 continue
 
-        version: int | None = None
         try:
             out = subprocess.check_output(
                 [chrome_cmd, "--version"], stderr=subprocess.DEVNULL, timeout=10
@@ -105,9 +104,9 @@ def detect_chrome_version() -> Optional[int]:
             # number at all; in that case fall through to the registry lookup
             m = re.search(r"(\d+)", text)
             if m:
-                version = int(m.group(1))
-                logger.debug("detected %s version %s", chrome_cmd, version)
-                return version
+                detected_version = int(m.group(1))
+                logger.debug("detected %s version %s", chrome_cmd, detected_version)
+                return detected_version
         except FileNotFoundError:
             # binary disappeared between which check and invocation
             continue
@@ -149,14 +148,14 @@ def resolve_chromedriver_executable(version_main: int) -> str:
                 "PUPPETS_CHROMEDRIVER_PATH points to ChromeDriver "
                 f"{override_version}, but Chrome is {version_main}: {override_path}"
             )
-        return override_path
+        return str(override_path)
 
     patcher = uc.Patcher(version_main=version_main)
     executable_path = patcher.executable_path
     if executable_path and os.path.exists(executable_path):
         driver_version = detect_chromedriver_version(executable_path)
         if driver_version == version_main:
-            return executable_path
+            return str(executable_path)
         logger.info(
             "Refreshing ChromeDriver cache: found version %s, need %s",
             driver_version or "unknown",
@@ -170,7 +169,7 @@ def resolve_chromedriver_executable(version_main: int) -> str:
             "undetected-chromedriver did not provide a ChromeDriver executable "
             f"for Chrome {version_main}"
         )
-    return executable_path
+    return str(executable_path)
 
 
 class Browser:
